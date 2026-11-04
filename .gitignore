@@ -1,0 +1,25 @@
+# env
+.env
+
+# python
+.venv/
+__pycache__/
+
+# node
+node_modules/
+package-lock.json
+
+# vscode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+!*.code-workspace
+
+# macos
+.DS_Store
+
+# temp
+temp/
