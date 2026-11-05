@@ -1,0 +1,56 @@
+{
+  "url": "https://openrouter.ai/api/alpha/decisions",
+  "timeoutMs": 30000,
+
+  "request": {
+    "model": "openai/gpt-6-luna-decisions",
+
+    "state": "something\n{{game_state}}",
+
+    "questions": {
+      "action": {
+        "type": "choice",
+        "instructions": "Choose exactly one next action based on the current snapshot. Choose noop if no useful safe action is available.",
+        "criteria": {
+          "noop": "Do nothing.",
+          "forward": "Walk forward for 400 milliseconds.",
+          "back": "Walk backward for 400 milliseconds.",
+          "left": "Strafe left for 400 milliseconds.",
+          "right": "Strafe right for 400 milliseconds.",
+          "jump_forward": "Move forward while jumping for 400 milliseconds."
+        }
+      }
+    }
+  },
+
+  "actions": {
+    "noop": {
+      "type": "noop"
+    },
+    "forward": {
+      "type": "move",
+      "controls": ["forward"],
+      "durationMs": 400
+    },
+    "back": {
+      "type": "move",
+      "controls": ["back"],
+      "durationMs": 400
+    },
+    "left": {
+      "type": "move",
+      "controls": ["left"],
+      "durationMs": 400
+    },
+    "right": {
+      "type": "move",
+      "controls": ["right"],
+      "durationMs": 400
+    },
+    "jump_forward": {
+      "type": "move",
+      "controls": ["forward", "jump"],
+      "durationMs": 400
+    }
+  }
+}
