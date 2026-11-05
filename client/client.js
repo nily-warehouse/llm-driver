@@ -76,7 +76,7 @@ function spawn() {
 }
 
 function end() {
-    console.log('[INFO]: Done!')
+    // console.log('[INFO]: Done!')
 }
 
 bot.on("login", login);
@@ -85,13 +85,33 @@ bot.on("kicked", kicked);
 bot.on("error", error => {
     console.error(`[ERROR]: Mineflayer error: ${error.message || error}`);
 });
-bot.on("end", end);
+// bot.on("end", end);
+
+
+// --- Dispatch ---
+
+bot.on('message', (jsonMsg) => {
+  const text = jsonMsg.toString()
+  const m = text.match(/BTN:(\S+)/)
+  if (!m) return
+  onButtonPressed(m[1])
+})
+
+function onButtonPressed(command) {
+    if (command == 'trigger') {
+        execute()
+    }
+}
 
 
 // --- Action selection ---
 
 function execute() {
-    // TODO: implement
+    // TODO: send get_state() to driver.js and fetch action and call perform
+}
+
+function perform() {
+    // TODO: perform fetched action from driver
 }
 
 
@@ -126,7 +146,6 @@ function get_cube(range) {
 
                 result.push({
                     name: block.name,
-                    position: vector_to_tuple(pos)
                 });
             }
         }

@@ -1,0 +1,7 @@
+{
+  "name": "harness",
+  "dependencies": {
+    "mineflayer": "latest",
+    "dotenv": "latest"
+  }
+}
