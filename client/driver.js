@@ -95,7 +95,7 @@ async function decide(state, { config = 1 } = {}) {
   const settings = await loadConfig(config);
 
   const request = fillTemplate(settings.request, {
-    game_state: JSON.stringify(state),
+    game_state: formatGameState(state),
   });
 
   const controller = new AbortController();
@@ -165,6 +165,44 @@ async function decide(state, { config = 1 } = {}) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function formatGameState(state) {
+  const { vision } = state;
+  const range = vision?.range;
+  const blocks = vision?.blocks;
+  const center = vision?.center;
+
+  if (
+    !Number.isSafeInteger(range) ||
+    range < 0 ||
+    !Array.isArray(blocks) ||
+    !Array.isArray(center) ||
+    center.length !== 3
+  ) {
+    throw new Error("Invalid vision snapshot.");
+  }
+
+  const side = 2 * range + 1;
+
+  if (blocks.length !== side ** 3) {
+    throw new Error(
+      `Expected ${side ** 3} blocks, received ${blocks.length}.`
+    );
+  }
+
+  const vector = (value) => value.join(" ");
+
+  return [
+    `position ${vector(state.position)}`,
+    `velocity ${vector(state.velocity)}`,
+    `yaw ${state.yaw}`,
+    `pitch ${state.pitch}`,
+    `range ${range}`,
+    `center ${vector(center)}`,
+    "blocks",
+    blocks.map((block) => block.name ?? "?").join(" "),
+  ].join("\n");
 }
 
 module.exports = { decide };

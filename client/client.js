@@ -218,39 +218,42 @@ async function perform(action) {
 // --- Game State Interpretation ---
 
 function get_state() {
-    const entity = bot.entity;
-    
-    return {
-        velocity: vector_to_tuple(bot.entity.velocity),
-        yaw:   bot.entity.yaw,
-        pitch: bot.entity.pitch,
-        vision: get_cube(RANGE)
-    };
+  const entity = bot.entity;
+
+  return {
+    position: vector_to_tuple(entity.position),
+    velocity: vector_to_tuple(entity.velocity),
+    yaw: entity.yaw,
+    pitch: entity.pitch,
+    vision: get_cube(RANGE),
+  };
 }
 
 function vector_to_tuple(vector) {
-    return [vector.x, vector.y, vector.z];
+  return [vector.x, vector.y, vector.z];
 }
 
 function get_cube(range) {
-    const result = [];
-    const center = bot.entity.position.floored();
+  const blocks = [];
+  const center = bot.entity.position.floored();
 
-    for (let dx = -range; dx <= range; dx++) {
-        for (let dy = -range; dy <= range; dy++) {
-            for (let dz = -range; dz <= range; dz++) {
-                const pos = center.offset(dx, dy, dz);
-                const block = bot.blockAt(pos);
-
-                if (!block) continue;
-
-                result.push({
-                    name: block.name,
-                });
-            }
-        }
+  for (let dx = -range; dx <= range; dx++) {
+    for (let dy = -range; dy <= range; dy++) {
+      for (let dz = -range; dz <= range; dz++) {
+        const block = bot.blockAt(center.offset(dx, dy, dz));
+        
+        blocks.push({
+          name: block ? block.name : null,
+        });
+      }
     }
-    return result;
+  }
+
+  return {
+    range,
+    center: vector_to_tuple(center),
+    blocks,
+  };
 }
 
 
