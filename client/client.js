@@ -12,10 +12,18 @@ dotenv.config({ path: path.resolve(__dirname, ".env") });
 const NAME = process.env.BOTNAME;
 const HOST = process.env.HOST;
 const PORT = 25565
-const RANGE = Number(process.env.RANGE);
+const HORIZONTAL_RANGE = readRange("HORIZONTAL_RANGE");
+const VERTICAL_RANGE = readRange("VERTICAL_RANGE");
 const VERSION = process.env.MINECRAFT_VERSION;
 const VERBOSE = /^(1|true|yes|on)$/i.test(process.env.VERBOSE || "");
 
+function readRange(name) {
+  const value = process.env[name] ?? process.env.RANGE;
+  if (value === undefined || !/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) {
+    throw new Error(`${name} must be a non-negative integer.`);
+  }
+  return Number(value);
+}
 
 // --- Arguments ---
 
@@ -126,8 +134,7 @@ async function execute() {
 
   try {
     const state = get_state();
-
-    if (VERBOSE) console.log("[STATE]:", JSON.stringify(state));
+    // if (VERBOSE) console.log("[STATE]:", JSON.stringify(state));
 
     const action = await decide(state, { config });
 
@@ -297,7 +304,7 @@ function get_state() {
       position: vector_to_tuple(targetedBlock.position),
       face: ["bottom", "top", "north", "south", "west", "east"][targetedBlock.face] || "unknown",
     } : null,
-    vision: get_cube(RANGE),
+    vision: get_blocks(HORIZONTAL_RANGE, VERTICAL_RANGE),
   };
 }
 
@@ -305,13 +312,13 @@ function vector_to_tuple(vector) {
   return [vector.x, vector.y, vector.z];
 }
 
-function get_cube(range) {
+function get_blocks(horizontalRange, verticalRange) {
   const blocks = [];
   const center = bot.entity.position.floored();
 
-  for (let dx = -range; dx <= range; dx++) {
-    for (let dy = -range; dy <= range; dy++) {
-      for (let dz = -range; dz <= range; dz++) {
+  for (let dx = -horizontalRange; dx <= horizontalRange; dx++) {
+    for (let dy = -verticalRange; dy <= verticalRange; dy++) {
+      for (let dz = -horizontalRange; dz <= horizontalRange; dz++) {
         const position = center.offset(dx, dy, dz);
         const block = bot.blockAt(position);
         
@@ -324,7 +331,8 @@ function get_cube(range) {
   }
 
   return {
-    range,
+    horizontalRange,
+    verticalRange,
     center: vector_to_tuple(center),
     blocks,
   };

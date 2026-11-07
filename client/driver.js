@@ -192,13 +192,16 @@ async function decide(state, { config = 1 } = {}) {
 
 function formatGameState(state) {
   const { vision } = state;
-  const range = vision?.range;
+  const horizontalRange = vision?.horizontalRange;
+  const verticalRange = vision?.verticalRange;
   const blocks = vision?.blocks;
   const center = vision?.center;
 
   if (
-    !Number.isSafeInteger(range) ||
-    range < 0 ||
+    !Number.isSafeInteger(horizontalRange) ||
+    horizontalRange < 0 ||
+    !Number.isSafeInteger(verticalRange) ||
+    verticalRange < 0 ||
     !Array.isArray(blocks) ||
     !Array.isArray(center) ||
     center.length !== 3
@@ -206,11 +209,11 @@ function formatGameState(state) {
     throw new Error("Invalid vision snapshot.");
   }
 
-  const side = 2 * range + 1;
+  const count = (2 * horizontalRange + 1) ** 2 * (2 * verticalRange + 1);
 
-  if (blocks.length !== side ** 3) {
+  if (blocks.length !== count) {
     throw new Error(
-      `Expected ${side ** 3} blocks, received ${blocks.length}.`
+      `Expected ${count} blocks, received ${blocks.length}.`
     );
   }
 
@@ -227,7 +230,8 @@ function formatGameState(state) {
     targetedBlock
       ? `targeted_block ${targetedBlock.name} ${vector(targetedBlock.position)} face ${targetedBlock.face}`
       : "targeted_block none",
-    `range ${range}`,
+    `horizontal_range ${horizontalRange}`,
+    `vertical_range ${verticalRange}`,
     `center ${vector(center)}`,
     "blocks",
     ...blocks.map((block) => `${block.name ?? "?"} ${vector(block.position)}`),
