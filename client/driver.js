@@ -60,13 +60,14 @@ async function loadConfig(number) {
     );
   }
 
-  const question = config.request?.questions?.action;
+  const decision = config.decide;
+  const question = decision?.request?.questions?.action;
   const criteria = question?.criteria;
 
   if (
-    typeof config.url !== "string" ||
-    !Number.isSafeInteger(config.timeoutMs) ||
-    config.timeoutMs <= 0 ||
+    typeof decision?.url !== "string" ||
+    !Number.isSafeInteger(decision.timeoutMs) ||
+    decision.timeoutMs <= 0 ||
     question?.type !== "choice" ||
     !criteria ||
     typeof criteria !== "object" ||
@@ -85,14 +86,31 @@ async function loadConfig(number) {
     }
   }
 
+  const analysis = config.analysis;
+  if (
+    typeof analysis?.url !== "string" ||
+    !Number.isSafeInteger(analysis.timeoutMs) ||
+    analysis.timeoutMs <= 0 ||
+    typeof analysis.request?.model !== "string" ||
+    !analysis.request.model.trim() ||
+    !Array.isArray(analysis.request.messages) ||
+    analysis.request.messages.length === 0
+  ) {
+    throw new Error("Invalid analysis config.");
+  }
+
   return config;
 }
 
 async function decide(state, { config = 1 } = {}) {
-  const apiKey = process.env.OPENROUTER_API_KEY;
+  const analysisApiKey = process.env.ANALYSIS_API_KEY;
+  const decideApiKey = process.env.DECIDE_API_KEY;
 
-  if (!apiKey) {
-    throw new Error("OPENROUTER_API_KEY is missing.");
+  if (!analysisApiKey?.trim()) {
+    throw new Error("ANALYSIS_API_KEY is missing.");
+  }
+  if (!decideApiKey?.trim()) {
+    throw new Error("DECIDE_API_KEY is missing.");
   }
 
   // Read on each trigger, so config edits apply without restarting.
@@ -118,17 +136,69 @@ async function decide(state, { config = 1 } = {}) {
     pitchStep,
     negativePitchStep: -pitchStep,
   };
-  const request = fillTemplate(settings.request, variables);
   const actions = fillTemplate(settings.actions, variables);
+  variables.permitted_actions = JSON.stringify(
+    fillTemplate(settings.decide.request.questions.action.criteria, variables),
+    null,
+    2
+  );
 
+  const analysisData = await postJSON(
+    settings.analysis.url,
+    fillTemplate(settings.analysis.request, variables),
+    { apiKey: analysisApiKey, timeoutMs: settings.analysis.timeoutMs, label: "Analysis API" }
+  );
+  const analysis = analysisData?.choices?.[0]?.message?.content;
+  if (typeof analysis !== "string" || !analysis.trim()) {
+    throw new Error("Analysis API returned no analysis text.");
+  }
+
+  if (/^(1|true|yes|on)$/i.test(process.env.VERBOSE || "")) {
+    console.log("[ANALYSIS]:", { analysis, usage: analysisData.usage });
+  }
+
+  // Keep the original snapshot; the analysis only advises the selector.
+  const request = fillTemplate(settings.decide.request, { ...variables, analysis });
+  const data = await postJSON(settings.decide.url, request, {
+    apiKey: decideApiKey,
+    timeoutMs: settings.decide.timeoutMs,
+    label: "Decision API",
+  });
+
+  const answer = data?.answers?.action;
+  const choice = answer?.choice;
+
+  if (
+    answer?.type !== "choice" ||
+    typeof choice !== "string" ||
+    !hasOwn(request.questions.action.criteria, choice) ||
+    !hasOwn(settings.actions, choice)
+  ) {
+    throw new Error(
+      `Invalid decision response: ${JSON.stringify(data).slice(0, 1000)}`
+    );
+  }
+
+  if (/^(1|true|yes|on)$/i.test(process.env.VERBOSE || "")) {
+    console.log("[DECISION]:", {
+      choice,
+      confidence: answer.confidence,
+      usage: data.usage,
+    });
+  }
+
+  return actions[choice];
+}
+
+async function postJSON(url, request, { apiKey, timeoutMs, label }) {
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(),
-    settings.timeoutMs
+    timeoutMs
   );
 
   try {
-    const response = await fetch(settings.url, {
+    const response = await fetch(url, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -142,45 +212,19 @@ async function decide(state, { config = 1 } = {}) {
 
     if (!response.ok) {
       throw new Error(
-        `Decision API HTTP ${response.status}: ${text.slice(0, 1000)}`
+        `${label} HTTP ${response.status}: ${text.slice(0, 1000)}`
       );
     }
-
-    let data;
 
     try {
-      data = JSON.parse(text);
+      return JSON.parse(text);
     } catch {
-      throw new Error("Decision API returned invalid JSON.");
+      throw new Error(`${label} returned invalid JSON.`);
     }
-
-    const answer = data?.answers?.action;
-    const choice = answer?.choice;
-
-    if (
-      answer?.type !== "choice" ||
-      typeof choice !== "string" ||
-      !hasOwn(request.questions.action.criteria, choice) ||
-      !hasOwn(settings.actions, choice)
-    ) {
-      throw new Error(
-        `Invalid decision response: ${JSON.stringify(data).slice(0, 1000)}`
-      );
-    }
-
-    if (/^(1|true|yes|on)$/i.test(process.env.VERBOSE || "")) {
-      console.log("[DECISION]:", {
-        choice,
-        confidence: answer.confidence,
-        usage: data.usage,
-      });
-    }
-
-    return actions[choice];
   } catch (error) {
     if (controller.signal.aborted) {
       throw new Error(
-        `Decision API timed out after ${settings.timeoutMs}ms.`
+        `${label} timed out after ${timeoutMs}ms.`
       );
     }
 
