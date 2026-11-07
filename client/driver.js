@@ -7,10 +7,14 @@ const hasOwn = (object, key) =>
 // Replace placeholders inside string values, without eval.
 function fillTemplate(value, variables) {
   if (typeof value === "string") {
+    const exact = value.match(/^\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}$/);
+    if (exact && hasOwn(variables, exact[1]) && variables[exact[1]] !== undefined) {
+      return variables[exact[1]];
+    }
     return value.replace(
       /\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}/g,
       (placeholder, name) => {
-        if (!hasOwn(variables, name)) {
+        if (!hasOwn(variables, name) || !["string", "number"].includes(typeof variables[name])) {
           throw new Error(`Unknown config placeholder: ${placeholder}`);
         }
 
@@ -94,9 +98,28 @@ async function decide(state, { config = 1 } = {}) {
   // Read on each trigger, so config edits apply without restarting.
   const settings = await loadConfig(config);
 
-  const request = fillTemplate(settings.request, {
+  const { movementDurationMs, turnStepDegrees } = settings;
+  if (!Number.isFinite(movementDurationMs) || movementDurationMs <= 0 || movementDurationMs > 5000 ||
+      !Number.isFinite(turnStepDegrees?.yaw) || turnStepDegrees.yaw <= 0 || turnStepDegrees.yaw > 180 ||
+      !Number.isFinite(turnStepDegrees?.pitch) || turnStepDegrees.pitch <= 0 || turnStepDegrees.pitch > 180) {
+    throw new Error("Invalid movementDurationMs or turnStepDegrees in decision config.");
+  }
+  const yawStep = turnStepDegrees.yaw * Math.PI / 180;
+  const pitchStep = turnStepDegrees.pitch * Math.PI / 180;
+  const variables = {
+    preface: settings.preface,
+    target: settings.target,
     game_state: formatGameState(state),
-  });
+    movementDurationMs,
+    yawStepDegrees: turnStepDegrees.yaw,
+    pitchStepDegrees: turnStepDegrees.pitch,
+    yawStep,
+    negativeYawStep: -yawStep,
+    pitchStep,
+    negativePitchStep: -pitchStep,
+  };
+  const request = fillTemplate(settings.request, variables);
+  const actions = fillTemplate(settings.actions, variables);
 
   const controller = new AbortController();
   const timer = setTimeout(
@@ -153,7 +176,7 @@ async function decide(state, { config = 1 } = {}) {
       });
     }
 
-    return settings.actions[choice];
+    return actions[choice];
   } catch (error) {
     if (controller.signal.aborted) {
       throw new Error(
@@ -192,16 +215,22 @@ function formatGameState(state) {
   }
 
   const vector = (value) => value.join(" ");
+  const targetedBlock = state.targetedBlock;
 
   return [
     `position ${vector(state.position)}`,
     `velocity ${vector(state.velocity)}`,
     `yaw ${state.yaw}`,
     `pitch ${state.pitch}`,
+    state.heldItem ? `held_item ${state.heldItem.name} ${state.heldItem.count}` : "held_item none",
+    state.targetedEntity ? `targeted_entity ${state.targetedEntity.name} ${vector(state.targetedEntity.position)}` : "targeted_entity none",
+    targetedBlock
+      ? `targeted_block ${targetedBlock.name} ${vector(targetedBlock.position)} face ${targetedBlock.face}`
+      : "targeted_block none",
     `range ${range}`,
     `center ${vector(center)}`,
     "blocks",
-    blocks.map((block) => block.name ?? "?").join(" "),
+    ...blocks.map((block) => `${block.name ?? "?"} ${vector(block.position)}`),
   ].join("\n");
 }
 

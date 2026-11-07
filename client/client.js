@@ -1,6 +1,8 @@
 const path = require("path");
 const dotenv = require("dotenv");
 const mineflayer = require("mineflayer");
+const { Vec3 } = require("vec3");
+const { RaycastIterator } = require("prismarine-world").iterators;
 const { decide } = require("./driver")
 
 dotenv.config({ path: path.resolve(__dirname, ".env") });
@@ -81,6 +83,7 @@ bot.on("death", () => {
   ready = false;
   generation++;
   bot.clearControlStates();
+  bot.stopDigging();
 });
 
 bot.on("end", () => {
@@ -209,6 +212,40 @@ async function perform(action) {
       return;
     }
 
+    case "look_relative": {
+      const { yaw = 0, pitch = 0 } = action;
+      if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) {
+        throw new Error("Invalid relative look angles.");
+      }
+      const nextPitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, bot.entity.pitch + pitch));
+      const nextYaw = Math.atan2(Math.sin(bot.entity.yaw + yaw), Math.cos(bot.entity.yaw + yaw));
+      await bot.look(nextYaw, nextPitch, true);
+      return;
+    }
+
+    case "attack": {
+      const target = targeted_entity();
+      if (!target) throw new Error("No entity under the crosshair within reach.");
+      bot.attack(target);
+      return;
+    }
+
+    case "dig": {
+      const block = targeted_block();
+      if (!block || !bot.canDigBlock(block)) throw new Error("No diggable block under the crosshair within reach.");
+      await bot.dig(block);
+      return;
+    }
+
+    case "place": {
+      const block = targeted_block();
+      const faces = [new Vec3(0, -1, 0), new Vec3(0, 1, 0), new Vec3(0, 0, -1), new Vec3(0, 0, 1), new Vec3(-1, 0, 0), new Vec3(1, 0, 0)];
+      if (!block || !faces[block.face]) throw new Error("No block face under the crosshair within reach.");
+      if (!bot.heldItem) throw new Error("No item held for placement.");
+      await bot.placeBlock(block, faces[block.face]);
+      return;
+    }
+
     default:
       throw new Error(`Unsupported action type: ${action.type}`);
   }
@@ -217,14 +254,49 @@ async function perform(action) {
 
 // --- Game State Interpretation ---
 
+function targeted_block() {
+  const { position, eyeHeight, yaw, pitch } = bot.entity;
+  const direction = new Vec3(-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
+  return bot.world.raycast(position.offset(0, eyeHeight, 0), direction, 4.5);
+}
+
+function targeted_entity() {
+  const { position, eyeHeight, yaw, pitch } = bot.entity;
+  const eye = position.offset(0, eyeHeight, 0);
+  const direction = new Vec3(-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
+  const block = bot.world.raycast(eye, direction, 3);
+  let nearestDistance = block ? eye.distanceTo(block.intersect) : 3;
+  let nearest = null;
+  for (const entity of Object.values(bot.entities)) {
+    if (entity === bot.entity || !entity.position || !entity.width || !entity.height) continue;
+    const halfWidth = entity.width / 2;
+    const ray = new RaycastIterator(eye, direction, 3);
+    const hit = ray.intersect([[-halfWidth, 0, -halfWidth, halfWidth, entity.height, halfWidth]], entity.position);
+    if (hit && eye.distanceTo(hit.pos) < nearestDistance) {
+      nearest = entity;
+      nearestDistance = eye.distanceTo(hit.pos);
+    }
+  }
+  return nearest;
+}
+
 function get_state() {
   const entity = bot.entity;
+  const targetedBlock = targeted_block();
+  const targetedEntity = targeted_entity();
 
   return {
     position: vector_to_tuple(entity.position),
     velocity: vector_to_tuple(entity.velocity),
     yaw: entity.yaw,
     pitch: entity.pitch,
+    heldItem: bot.heldItem ? { name: bot.heldItem.name, count: bot.heldItem.count } : null,
+    targetedEntity: targetedEntity ? { name: targetedEntity.name || targetedEntity.username || targetedEntity.type, position: vector_to_tuple(targetedEntity.position) } : null,
+    targetedBlock: targetedBlock ? {
+      name: targetedBlock.name,
+      position: vector_to_tuple(targetedBlock.position),
+      face: ["bottom", "top", "north", "south", "west", "east"][targetedBlock.face] || "unknown",
+    } : null,
     vision: get_cube(RANGE),
   };
 }
@@ -240,10 +312,12 @@ function get_cube(range) {
   for (let dx = -range; dx <= range; dx++) {
     for (let dy = -range; dy <= range; dy++) {
       for (let dz = -range; dz <= range; dz++) {
-        const block = bot.blockAt(center.offset(dx, dy, dz));
+        const position = center.offset(dx, dy, dz);
+        const block = bot.blockAt(position);
         
         blocks.push({
           name: block ? block.name : null,
+          position: vector_to_tuple(position),
         });
       }
     }
