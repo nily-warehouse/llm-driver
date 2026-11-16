@@ -4,6 +4,7 @@ const mineflayer = require("mineflayer");
 const { Vec3 } = require("vec3");
 const { RaycastIterator } = require("prismarine-world").iterators;
 const { decide } = require("./driver")
+const { trackDismounts, waitForVehicle } = require("./riding");
 
 dotenv.config({ path: path.resolve(__dirname, ".env") });
 
@@ -65,6 +66,8 @@ const bot = mineflayer.createBot({
 let ready = false;
 let busy = false;
 let generation = 0;
+
+trackDismounts(bot);
 
 bot.on("login", () => {
     const bot_socket = bot._client.socket;
@@ -138,7 +141,8 @@ async function execute() {
 
     const action = await decide(state, { config });
 
-    if (!ready || generation !== currentGeneration) {
+    if (!ready || generation !== currentGeneration ||
+        (state.vehicle?.id ?? null) !== (bot.vehicle?.id ?? null)) {
       console.warn("[WARN]: Discarded a stale decision.");
       return;
     }
@@ -164,44 +168,189 @@ async function perform(action) {
       return;
 
     case "move": {
-      const allowed = new Set([
-        "forward",
-        "back",
-        "left",
-        "right",
-        "jump",
-        "sprint",
-        "sneak",
-      ]);
+    const allowed = new Set([
+      "forward", "back", "left", "right",
+      "jump", "sprint", "sneak",
+    ]);
 
-      const { controls, durationMs } = action;
+    const { controls, durationMs } = action;
 
-      if (
-        !Array.isArray(controls) ||
-        !controls.every((control) => allowed.has(control))
-      ) {
-        throw new Error("Invalid movement controls.");
+    if (
+      !Array.isArray(controls) ||
+      !controls.every(control => allowed.has(control))
+    ) {
+      throw new Error("Invalid movement controls.");
+    }
+
+    if (
+      !Number.isFinite(durationMs) ||
+      durationMs <= 0 ||
+      durationMs > 5000
+    ) {
+      throw new Error("durationMs must be > 0 and <= 5000 ms.");
+    }
+
+    if (!ready) {
+      throw new Error("Bot is not ready.");
+    }
+
+    const currentGeneration = generation;
+    const vehicle = bot.vehicle;
+    const deadline = Date.now() + durationMs;
+
+    const isCurrent = () =>
+      ready && generation === currentGeneration;
+
+    const isSameVehicle = () =>
+      isCurrent() && bot.vehicle === vehicle;
+
+    const sleep = ms =>
+      new Promise(resolve => setTimeout(resolve, ms));
+
+    const left =
+      Number(controls.includes("left")) -
+      Number(controls.includes("right"));
+
+    const forward =
+      Number(controls.includes("forward")) -
+      Number(controls.includes("back"));
+
+    const isBoat =
+      vehicle &&
+      ["boat", "chest_boat"].includes(vehicle.name);
+
+    if (
+      vehicle &&
+      controls.some(control =>
+        ["jump", "sprint", "sneak"].includes(control)
+      )
+    ) {
+      throw new Error(
+        "Vehicle movement supports only forward/back/left/right. " +
+        "Use bot.dismount() separately to dismount."
+      );
+    }
+
+    bot.clearControlStates();
+
+    if (isBoat) {
+      const passengers = vehicle.passengers ?? [];
+
+      if (passengers[0]?.id !== bot.entity.id) {
+        throw new Error("Bot must be the boat's first passenger.");
       }
 
-      if (
-        !Number.isFinite(durationMs) ||
-        durationMs <= 0 ||
-        durationMs > 5000
-      ) {
-        throw new Error("durationMs must be between 0 and 5000 ms.");
-      }
+      const state = {
+        x: vehicle.position.x,
+        y: vehicle.position.y,
+        z: vehicle.position.z,
+        yaw: 180 - vehicle.yaw * 180 / Math.PI,
+        pitch: 0,
+        vx: 0,
+        vz: 0,
+      };
+
+      const onVehicleMove = packet => {
+        if (!isSameVehicle()) return;
+
+        Object.assign(state, {
+          x: packet.x,
+          y: packet.y,
+          z: packet.z,
+          yaw: packet.yaw,
+          pitch: packet.pitch,
+          vx: 0,
+          vz: 0,
+        });
+      };
+
+      bot._client.on("vehicle_move", onVehicleMove);
 
       try {
-        for (const control of controls) {
-          bot.setControlState(control, true);
-        }
+        while (isSameVehicle()) {
+          const remainingMs = deadline - Date.now();
+          if (remainingMs <= 0) break;
 
-        await new Promise((resolve) => setTimeout(resolve, durationMs));
+          state.yaw -= left * 2;
+
+          const angle = state.yaw * Math.PI / 180;
+
+          const thrust =
+            forward > 0 ? 0.02 :
+            forward < 0 ? -0.005 :
+            left !== 0 ? 0.005 : 0;
+
+          state.vx = state.vx * 0.9 - Math.sin(angle) * thrust;
+          state.vz = state.vz * 0.9 + Math.cos(angle) * thrust;
+
+          state.x += state.vx;
+          state.z += state.vz;
+
+          bot._client.write("steer_boat", {
+            leftPaddle: left < 0 || forward > 0,
+            rightPaddle: left > 0 || forward > 0,
+          });
+
+          bot._client.write("vehicle_move", {
+            x: state.x,
+            y: state.y,
+            z: state.z,
+            yaw: state.yaw,
+            pitch: state.pitch,
+          });
+
+          await sleep(Math.min(50, remainingMs));
+        }
       } finally {
-        bot.clearControlStates();
+        bot._client.removeListener("vehicle_move", onVehicleMove);
+
+        if (isSameVehicle()) {
+          bot._client.write("steer_boat", {
+            leftPaddle: false,
+            rightPaddle: false,
+          });
+        }
       }
 
       return;
+    }
+
+    if (vehicle) {
+      try {
+        while (isSameVehicle()) {
+          const remainingMs = deadline - Date.now();
+          if (remainingMs <= 0) break;
+
+          bot.moveVehicle(left, forward);
+          await sleep(Math.min(50, remainingMs));
+        }
+      } finally {
+        if (isSameVehicle()) {
+          bot.moveVehicle(0, 0);
+        }
+      }
+
+      return;
+    }
+
+    try {
+      for (const control of controls) {
+        bot.setControlState(control, true);
+      }
+
+      while (isCurrent() && !bot.vehicle) {
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) break;
+
+        await sleep(Math.min(50, remainingMs));
+      }
+    } finally {
+      if (isCurrent()) {
+        bot.clearControlStates();
+      }
+    }
+
+    return;
     }
 
     case "look": {
@@ -234,6 +383,24 @@ async function perform(action) {
       const target = targeted_entity();
       if (!target) throw new Error("No entity under the crosshair within reach.");
       bot.attack(target);
+      return;
+    }
+
+    case "mount": {
+      if (bot.vehicle) throw new Error("Bot is already riding a vehicle.");
+      const target = targeted_entity();
+      if (!target) throw new Error("No entity under the crosshair within reach.");
+      const currentGeneration = generation;
+      bot.mount(target);
+      await waitForVehicle(bot, target.id, () => ready && generation === currentGeneration);
+      return;
+    }
+
+    case "dismount": {
+      if (!bot.vehicle) throw new Error("Bot is not riding a vehicle.");
+      const currentGeneration = generation;
+      bot.dismount();
+      await waitForVehicle(bot, null, () => ready && generation === currentGeneration);
       return;
     }
 
@@ -289,6 +456,7 @@ function targeted_entity() {
 
 function get_state() {
   const entity = bot.entity;
+  const vehicle = bot.vehicle;
   const targetedBlock = targeted_block();
   const targetedEntity = targeted_entity();
 
@@ -297,6 +465,11 @@ function get_state() {
     velocity: vector_to_tuple(entity.velocity),
     yaw: entity.yaw,
     pitch: entity.pitch,
+    vehicle: vehicle ? {
+      id: vehicle.id,
+      name: vehicle.name || vehicle.username || vehicle.type || "unknown",
+      position: vector_to_tuple(vehicle.position),
+    } : null,
     heldItem: bot.heldItem ? { name: bot.heldItem.name, count: bot.heldItem.count } : null,
     targetedEntity: targetedEntity ? { name: targetedEntity.name || targetedEntity.username || targetedEntity.type, position: vector_to_tuple(targetedEntity.position) } : null,
     targetedBlock: targetedBlock ? {
@@ -335,6 +508,19 @@ function get_blocks(horizontalRange, verticalRange) {
     verticalRange,
     center: vector_to_tuple(center),
     blocks,
+    entities: Object.values(bot.entities)
+      .filter((entity) => {
+        if (entity === bot.entity || !entity.position) return false;
+        const position = entity.position.floored();
+        return Math.abs(position.x - center.x) <= horizontalRange &&
+          Math.abs(position.y - center.y) <= verticalRange &&
+          Math.abs(position.z - center.z) <= horizontalRange;
+      })
+      .map((entity) => ({
+        id: entity.id,
+        name: entity.name || entity.username || entity.type || "unknown",
+        position: vector_to_tuple(entity.position),
+      })),
   };
 }
 

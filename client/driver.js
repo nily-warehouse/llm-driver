@@ -137,15 +137,33 @@ async function decide(state, { config = 1 } = {}) {
     negativePitchStep: -pitchStep,
   };
   const actions = fillTemplate(settings.actions, variables);
+  const mounted = Boolean(state.vehicle);
+  const criteria = Object.fromEntries(
+    Object.entries(settings.decide.request.questions.action.criteria).filter(([choice]) => {
+      const action = actions[choice];
+      if (action.type === "mount") return !mounted;
+      if (action.type === "dismount") return mounted;
+      if (mounted && action.type === "move" &&
+          action.controls?.some((control) => ["jump", "sprint", "sneak"].includes(control))) return false;
+      return true;
+    })
+  );
   variables.permitted_actions = JSON.stringify(
-    fillTemplate(settings.decide.request.questions.action.criteria, variables),
+    fillTemplate(criteria, variables),
     null,
     2
   );
 
+  const ridingFacts = `AUTHORITATIVE RIDING STATE\nmounted ${mounted}\n` +
+    (mounted ? `vehicle ${state.vehicle.id} ${state.vehicle.name}\nYou are riding this vehicle.` :
+      "vehicle none\nYou are on foot.") +
+    "\nUse this state exactly. Nearby boats, coordinates, and prior actions do not override it. " +
+    "Choose only a currently permitted action.\n";
+  const analysisRequest = fillTemplate(settings.analysis.request, variables);
+  analysisRequest.messages.unshift({ role: "system", content: ridingFacts });
   const analysisData = await postJSON(
     settings.analysis.url,
-    fillTemplate(settings.analysis.request, variables),
+    analysisRequest,
     { apiKey: analysisApiKey, timeoutMs: settings.analysis.timeoutMs, label: "Analysis API" }
   );
   const analysis = analysisData?.choices?.[0]?.message?.content;
@@ -159,6 +177,8 @@ async function decide(state, { config = 1 } = {}) {
 
   // Keep the original snapshot; the analysis only advises the selector.
   const request = fillTemplate(settings.decide.request, { ...variables, analysis });
+  request.questions.action.criteria = fillTemplate(criteria, variables);
+  request.state = `${ridingFacts}\n${request.state}`;
   const data = await postJSON(settings.decide.url, request, {
     apiKey: decideApiKey,
     timeoutMs: settings.decide.timeoutMs,
@@ -269,6 +289,10 @@ function formatGameState(state) {
     `velocity ${vector(state.velocity)}`,
     `yaw ${state.yaw}`,
     `pitch ${state.pitch}`,
+    `mounted ${Boolean(state.vehicle)}`,
+    state.vehicle
+      ? `vehicle ${state.vehicle.id} ${state.vehicle.name} ${vector(state.vehicle.position)}`
+      : "vehicle none",
     state.heldItem ? `held_item ${state.heldItem.name} ${state.heldItem.count}` : "held_item none",
     state.targetedEntity ? `targeted_entity ${state.targetedEntity.name} ${vector(state.targetedEntity.position)}` : "targeted_entity none",
     targetedBlock
@@ -277,6 +301,10 @@ function formatGameState(state) {
     `horizontal_range ${horizontalRange}`,
     `vertical_range ${verticalRange}`,
     `center ${vector(center)}`,
+    "entities",
+    ...(vision.entities?.length
+      ? vision.entities.map((entity) => `${entity.id} ${entity.name} ${vector(entity.position)}`)
+      : ["none"]),
     "blocks",
     ...blocks.map((block) => `${block.name ?? "?"} ${vector(block.position)}`),
   ].join("\n");
